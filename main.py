@@ -70,10 +70,12 @@ class Reactor(QWidget):
 
             pen = QPen(QColor(65, 220, 255, alpha))
             pen.setWidth(width)
+
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
             r = radius * ring_radius
+
             painter.drawEllipse(
                 QRectF(
                     center_x - r,
@@ -84,6 +86,71 @@ class Reactor(QWidget):
             )
 
             painter.restore()
+
+        # Draw rotating energy segments
+        painter.save()
+        painter.translate(center_x, center_y)
+        painter.rotate(-self.angle * 0.6)
+
+        segment_pen = QPen(QColor(65, 220, 255, 210))
+        segment_pen.setWidth(4)
+        segment_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+        painter.setPen(segment_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        segment_radius = radius * 0.78
+
+        for i in range(8):
+            start_angle = i * 45 + 5
+            span_angle = 25
+
+            painter.drawArc(
+                QRectF(
+                    -segment_radius,
+                    -segment_radius,
+                    segment_radius * 2,
+                    segment_radius * 2
+                ),
+                int(start_angle * 16),
+                int(span_angle * 16)
+            )
+
+        painter.restore()
+
+        # Draw rotating radial markings
+        painter.save()
+        painter.translate(center_x, center_y)
+        painter.rotate(self.angle)
+
+        for i in range(60):
+            painter.save()
+            painter.rotate(i * 6)
+
+            if i % 5 == 0:
+                tick_length = 12
+                tick_color = QColor(101, 231, 255, 220)
+                tick_width = 2
+            else:
+                tick_length = 5
+                tick_color = QColor(65, 180, 210, 120)
+                tick_width = 1
+
+            tick_pen = QPen(tick_color)
+            tick_pen.setWidth(tick_width)
+            painter.setPen(tick_pen)
+
+            outer = radius * 0.96
+            inner = outer - tick_length
+
+            painter.drawLine(
+                0, int(-outer),
+                0, int(-inner)
+            )
+
+            painter.restore()
+
+        painter.restore()
 
         # Draw rotating glowing points
         painter.setPen(Qt.PenStyle.NoPen)
@@ -106,8 +173,11 @@ class Reactor(QWidget):
         )
 
         core = QRadialGradient(
-            center_x, center_y, core_radius
+            center_x,
+            center_y,
+            core_radius
         )
+
         core.setColorAt(0, QColor("#D8FAFF"))
         core.setColorAt(0.35, QColor("#42DFFF"))
         core.setColorAt(1, QColor(0, 100, 190, 20))
@@ -131,8 +201,10 @@ class Reactor(QWidget):
         )
 
         title_rect = QRectF(
-            0, center_y - radius - 65,
-            self.width(), 40
+            0,
+            center_y - radius - 65,
+            self.width(),
+            40
         )
 
         painter.drawText(
@@ -146,8 +218,10 @@ class Reactor(QWidget):
         painter.setFont(QFont("Consolas", 10))
 
         status_rect = QRectF(
-            0, center_y + radius + 30,
-            self.width(), 30
+            0,
+            center_y + radius + 30,
+            self.width(),
+            30
         )
 
         painter.drawText(
