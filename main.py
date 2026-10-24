@@ -2,8 +2,8 @@
 import sys
 import math
 
+from PySide6.QtCore import Qt, QRectF, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
-from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QFont, QRadialGradient
 )
@@ -14,13 +14,25 @@ class Reactor(QWidget):
         super().__init__()
         self.setMinimumSize(600, 600)
 
+        self.angle = 0
+        self.pulse = 0
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(30)
+
+    def animate(self):
+        self.angle = (self.angle + 2) % 360
+        self.pulse = (self.pulse + 0.08) % (2 * math.pi)
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Center the reactor in the window
         center_x = self.width() / 2
-        center_y = self.height() / 2
+        center_y = self.height() / 2    
 
         # Keep the reactor circular on different window sizes
         radius = min(self.width(), self.height()) * 0.29
@@ -62,7 +74,7 @@ class Reactor(QWidget):
         painter.setBrush(QColor("#65E7FF"))
 
         for i in range(36):
-            angle = math.radians(i * 10)
+            angle = math.radians(i * 10 + self.angle)
             dot_radius = radius * 1.07
 
             x = center_x + math.cos(angle) * dot_radius
