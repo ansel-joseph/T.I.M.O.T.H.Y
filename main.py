@@ -2,8 +2,11 @@
 import psutil
 import sys
 import math
+import json
+import urllib.request
+import urllib.error
 
-from PySide6.QtCore import Qt, QRectF, QTimer
+from PySide6.QtCore import Qt, QRectF, QTimer, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -12,6 +15,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QHBoxLayout,
     QVBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QPlainTextEdit,
 )
 from PySide6.QtGui import (
     QPainter,
@@ -23,13 +29,104 @@ from PySide6.QtGui import (
 
 
 # =========================================================
+# LOCAL AI WORKER
+# =========================================================
+
+class AIWorker(QThread):
+    response_received = Signal(str)
+    error_occurred = Signal(str)
+
+    def __init__(self, messages):
+        super().__init__()
+        self.messages = messages
+
+    def run(self):
+        try:
+            payload = {
+                "model": "qwen2.5:3b",
+                "keep_alive": "30m",
+                "messages": self.messages,
+                "stream": False,
+
+                # Disable Qwen3's thinking mode.
+                "think": False,
+
+                "options": {
+                    "num_predict": 256,
+                    "temperature": 0.6,
+                },
+            }
+
+            data = json.dumps(payload).encode("utf-8")
+
+            request = urllib.request.Request(
+                "http://localhost:11434/api/chat",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with urllib.request.urlopen(
+                request, timeout=180
+            ) as result:
+                response_data = json.loads(
+                    result.read().decode("utf-8")
+                )
+
+            message_data = response_data.get("message", {})
+
+            # Only display the final content, never the
+            # separate thinking field.
+            answer = message_data.get("content", "").strip()
+
+            if not answer:
+                thinking = message_data.get("thinking", "").strip()
+
+                if thinking:
+                    answer = (
+                        "I received internal reasoning but no final "
+                        "answer. Check Ollama's Qwen3 thinking-mode "
+                        "support and version."
+                    )
+                else:
+                    answer = (
+                        "Ollama returned an empty response. "
+                        "Please try again."
+                    )
+
+            self.response_received.emit(answer)
+
+        except urllib.error.HTTPError as error:
+            details = error.read().decode(
+                "utf-8", errors="replace"
+            )
+
+            self.error_occurred.emit(
+                f"Ollama returned HTTP {error.code}.\n\n"
+                f"{details or error.reason}"
+            )
+
+        except urllib.error.URLError as error:
+            self.error_occurred.emit(
+                "Could not connect to Ollama.\n"
+                "Check that Ollama is running.\n\n"
+                f"Details: {error}"
+            )
+
+        except Exception as error:
+            self.error_occurred.emit(
+                f"Something went wrong:\n{error}"
+            )
+
+
+# =========================================================
 # REACTOR
 # =========================================================
 
 class Reactor(QWidget):
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(600, 600)
+        self.setMinimumSize(400, 400)
 
         self.angle = 0
         self.pulse = 0
@@ -40,19 +137,28 @@ class Reactor(QWidget):
 
     def animate(self):
         self.angle = (self.angle + 2) % 360
-        self.pulse = (self.pulse + 0.08) % (2 * math.pi)
+        self.pulse = (
+            self.pulse + 0.08
+        ) % (2 * math.pi)
+
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing
+        )
 
         center_x = self.width() / 2
         center_y = self.height() / 2
-        radius = min(self.width(), self.height()) * 0.29
 
-        # Background glow
-        glow = QRadialGradient(center_x, center_y, radius * 1.8)
+        radius = min(
+            self.width(), self.height()
+        ) * 0.29
+
+        glow = QRadialGradient(
+            center_x, center_y, radius * 1.8
+        )
         glow.setColorAt(0, QColor(0, 160, 255, 35))
         glow.setColorAt(1, QColor(0, 0, 0, 0))
 
@@ -68,13 +174,14 @@ class Reactor(QWidget):
             )
         )
 
-        # Concentric rings
-        for index, (ring_radius, width, alpha) in enumerate([
+        rings = [
             (1.00, 3, 230),
             (0.88, 1, 170),
             (0.72, 2, 210),
             (0.56, 1, 150),
-        ]):
+        ]
+
+        for index, (ring_radius, width, alpha) in enumerate(rings):
             painter.save()
 
             if index == 2:
@@ -82,7 +189,9 @@ class Reactor(QWidget):
                 painter.rotate(self.angle)
                 painter.translate(-center_x, -center_y)
 
-            pen = QPen(QColor(65, 220, 255, alpha))
+            pen = QPen(
+                QColor(65, 220, 255, alpha)
+            )
             pen.setWidth(width)
 
             painter.setPen(pen)
@@ -101,14 +210,17 @@ class Reactor(QWidget):
 
             painter.restore()
 
-        # Rotating energy segments
         painter.save()
         painter.translate(center_x, center_y)
         painter.rotate(-self.angle * 0.6)
 
-        segment_pen = QPen(QColor(65, 220, 255, 210))
+        segment_pen = QPen(
+            QColor(65, 220, 255, 210)
+        )
         segment_pen.setWidth(4)
-        segment_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        segment_pen.setCapStyle(
+            Qt.PenCapStyle.RoundCap
+        )
 
         painter.setPen(segment_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -116,9 +228,6 @@ class Reactor(QWidget):
         segment_radius = radius * 0.78
 
         for i in range(8):
-            start_angle = i * 45 + 5
-            span_angle = 25
-
             painter.drawArc(
                 QRectF(
                     -segment_radius,
@@ -126,13 +235,12 @@ class Reactor(QWidget):
                     segment_radius * 2,
                     segment_radius * 2,
                 ),
-                int(start_angle * 16),
-                int(span_angle * 16),
+                int((i * 45 + 5) * 16),
+                int(25 * 16),
             )
 
         painter.restore()
 
-        # Radial markings
         painter.save()
         painter.translate(center_x, center_y)
         painter.rotate(self.angle)
@@ -166,12 +274,13 @@ class Reactor(QWidget):
 
         painter.restore()
 
-        # Glowing outer points
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#65E7FF"))
 
         for i in range(36):
-            angle = math.radians(i * 10 + self.angle)
+            angle = math.radians(
+                i * 10 + self.angle
+            )
             dot_radius = radius * 1.07
 
             x = center_x + math.cos(angle) * dot_radius
@@ -181,17 +290,13 @@ class Reactor(QWidget):
                 QRectF(x - 2, y - 2, 4, 4)
             )
 
-        # Pulsating core
         core_radius = radius * (
             0.34 + 0.03 * math.sin(self.pulse)
         )
 
         core = QRadialGradient(
-            center_x,
-            center_y,
-            core_radius,
+            center_x, center_y, core_radius
         )
-
         core.setColorAt(0, QColor("#D8FAFF"))
         core.setColorAt(0.35, QColor("#42DFFF"))
         core.setColorAt(1, QColor(0, 100, 190, 20))
@@ -208,52 +313,44 @@ class Reactor(QWidget):
             )
         )
 
-        # Reactor title
         painter.setPen(QColor("#65E7FF"))
         painter.setFont(
             QFont("Consolas", 21, QFont.Weight.Bold)
         )
-
         painter.drawText(
             QRectF(
-                0,
-                center_y - radius - 65,
-                self.width(),
-                40,
+                0, center_y - radius - 65,
+                self.width(), 40,
             ),
             Qt.AlignmentFlag.AlignCenter,
             "T.I.M.O.T.H.Y.",
         )
 
-        # Reactor status
         painter.setPen(QColor("#8BAFBE"))
         painter.setFont(QFont("Consolas", 10))
-
         painter.drawText(
             QRectF(
-                0,
-                center_y + radius + 30,
-                self.width(),
-                30,
+                0, center_y + radius + 30,
+                self.width(), 30,
             ),
             Qt.AlignmentFlag.AlignCenter,
-            "SYSTEM ONLINE  |  VOICE MODULE OFFLINE",
+            "LOCAL AI  |  SYSTEM ONLINE",
         )
 
 
 # =========================================================
-# DASHBOARD PANEL HELPER
+# DASHBOARD HELPERS
 # =========================================================
 
 def create_panel(title):
     panel = QFrame()
     panel.setObjectName("dashboardPanel")
     panel.setMinimumWidth(205)
-    panel.setMaximumWidth(260)
+    panel.setMaximumWidth(280)
 
     layout = QVBoxLayout(panel)
     layout.setContentsMargins(16, 18, 16, 18)
-    layout.setSpacing(16)
+    layout.setSpacing(12)
 
     heading = QLabel(title)
     heading.setObjectName("panelHeading")
@@ -295,6 +392,9 @@ class TimothyWindow(QMainWindow):
         self.resize(1400, 800)
         self.setMinimumSize(1100, 700)
 
+        self.conversation = []
+        self.ai_worker = None
+
         self.setStyleSheet("""
             QMainWindow, QWidget#root {
                 background-color: #050914;
@@ -324,7 +424,7 @@ class TimothyWindow(QMainWindow):
             QLabel#metricValue {
                 color: #BDEFFF;
                 font-family: Consolas;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: bold;
             }
 
@@ -340,9 +440,47 @@ class TimothyWindow(QMainWindow):
                 font-size: 10px;
                 padding: 8px;
             }
+
+            QPlainTextEdit#responseStream {
+                background-color: #07101D;
+                color: #BDEFFF;
+                border: 1px solid #18374A;
+                border-radius: 6px;
+                padding: 8px;
+                font-family: Consolas;
+                font-size: 11px;
+            }
+
+            QLineEdit#messageInput {
+                background-color: #07101D;
+                color: #D8FAFF;
+                border: 1px solid #286079;
+                border-radius: 6px;
+                padding: 9px;
+                font-family: Consolas;
+                font-size: 11px;
+            }
+
+            QPushButton#sendButton {
+                background-color: #103447;
+                color: #65E7FF;
+                border: 1px solid #286079;
+                border-radius: 6px;
+                padding: 9px;
+                font-family: Consolas;
+                font-weight: bold;
+            }
+
+            QPushButton#sendButton:hover {
+                background-color: #18516A;
+            }
+
+            QPushButton#sendButton:disabled {
+                color: #607784;
+                background-color: #101B27;
+            }
         """)
 
-        # Main root widget
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
@@ -351,22 +489,20 @@ class TimothyWindow(QMainWindow):
         main_layout.setContentsMargins(18, 16, 18, 10)
         main_layout.setSpacing(8)
 
-        # Three-column dashboard
         dashboard = QHBoxLayout()
         dashboard.setSpacing(16)
 
-        # LEFT PANEL: SYSTEM MONITOR
-        left_panel, left_layout = create_panel("SYSTEM MONITOR")
+        # LEFT: SYSTEM MONITOR
+        left_panel, left_layout = create_panel(
+            "SYSTEM MONITOR"
+        )
 
-        # CPU metric
         cpu_metric = create_metric("CPU USAGE", "0%")
-        left_layout.addWidget(cpu_metric)
-
-        # RAM metric
         ram_metric = create_metric("MEMORY", "Loading...")
+
+        left_layout.addWidget(cpu_metric)
         left_layout.addWidget(ram_metric)
 
-        # Keep references to the value labels
         self.cpu_value = cpu_metric.findChild(
             QLabel, "metricValue"
         )
@@ -375,10 +511,10 @@ class TimothyWindow(QMainWindow):
         )
 
         left_layout.addWidget(
-            create_metric("GPU", "STANDBY")
+            create_metric("GPU", "RTX 2050")
         )
         left_layout.addWidget(
-            create_metric("AI ENGINE", "QWEN3")
+            create_metric("AI ENGINE", "qwen2.5:3b")
         )
 
         left_layout.addStretch()
@@ -393,73 +529,261 @@ class TimothyWindow(QMainWindow):
         # CENTER: REACTOR
         self.reactor = Reactor()
 
-        # RIGHT PANEL: AI INFORMATION
-        right_panel, right_layout = create_panel("INFORMATION")
+        # RIGHT: AI INFORMATION
+        right_panel, right_layout = create_panel(
+            "INFORMATION"
+        )
 
         response_label = QLabel("RESPONSE STREAM")
         response_label.setObjectName("metricLabel")
         right_layout.addWidget(response_label)
 
-        response_text = QLabel(
+        self.response_text = QPlainTextEdit()
+        self.response_text.setObjectName("responseStream")
+        self.response_text.setReadOnly(True)
+        self.response_text.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
+        self.response_text.setPlainText(
             "T.I.M.O.T.H.Y. is online.\n\n"
-            "AI response display is ready.\n\n"
-            "Awaiting connection to the local AI engine..."
+            "Local AI connection ready.\n\n"
+            "Enter a message below to begin."
         )
-        response_text.setObjectName("infoText")
-        response_text.setWordWrap(True)
-        response_text.setAlignment(
-            Qt.AlignmentFlag.AlignTop
+        right_layout.addWidget(self.response_text, 1)
+
+        self.message_input = QLineEdit()
+        self.message_input.setObjectName("messageInput")
+        self.message_input.setPlaceholderText(
+            "Message T.I.M.O.T.H.Y...."
         )
-        right_layout.addWidget(response_text)
+        self.message_input.returnPressed.connect(
+            self.send_message
+        )
+        right_layout.addWidget(self.message_input)
 
-        right_layout.addStretch()
+        self.send_button = QPushButton("SEND")
+        self.send_button.setObjectName("sendButton")
+        self.send_button.clicked.connect(self.send_message)
+        right_layout.addWidget(self.send_button)
 
-        connection_label = QLabel(
-            "LOCAL MODEL\nQWEN3:4B\n\n"
+        self.connection_label = QLabel(
+            "LOCAL MODEL\nqwen2.5:3b\n\n"
             "VOICE MODULE\nOFFLINE"
         )
-        connection_label.setObjectName("metricValue")
-        connection_label.setWordWrap(True)
-        right_layout.addWidget(connection_label)
+        self.connection_label.setObjectName("metricValue")
+        self.connection_label.setWordWrap(True)
+        right_layout.addWidget(self.connection_label)
 
-        # Assemble dashboard
         dashboard.addWidget(left_panel)
         dashboard.addWidget(self.reactor, 1)
         dashboard.addWidget(right_panel)
 
         main_layout.addLayout(dashboard, 1)
 
-        # Initialize CPU monitoring
+        self.status = QLabel(
+            "T.I.M.O.T.H.Y.  |  INTERFACE ONLINE  |  "
+            "LOCAL AI READY"
+        )
+        self.status.setObjectName("statusBar")
+        self.status.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        main_layout.addWidget(self.status)
+
         psutil.cpu_percent(interval=None)
 
-        # Update system metrics every second
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(
             self.update_system_metrics
         )
         self.monitor_timer.start(1000)
 
-        # Display initial readings
         self.update_system_metrics()
 
-        # Bottom status bar
-        status = QLabel(
-            "T.I.M.O.T.H.Y.  |  INTERFACE ONLINE  |  "
-            "AI CONNECTION PENDING"
-        )
-        status.setObjectName("statusBar")
-        status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # -----------------------------------------------------
+    # SEND MESSAGE
+    # -----------------------------------------------------
 
-        main_layout.addWidget(status)
+    def send_message(self):
+        message = self.message_input.text().strip()
+
+        if not message:
+            return
+
+        if (
+            self.ai_worker is not None
+            and self.ai_worker.isRunning()
+        ):
+            return
+
+        self.conversation.append({
+            "role": "user",
+            "content": message,
+        })
+
+        self.response_text.appendPlainText(
+            f"\nYOU:\n{message}\n\n"
+            "T.I.M.O.T.H.Y.:\nThinking..."
+        )
+
+        self.message_input.clear()
+        self.message_input.setEnabled(False)
+        self.send_button.setEnabled(False)
+
+        self.status.setText(
+            "T.I.M.O.T.H.Y.  |  PROCESSING REQUEST..."
+        )
+
+
+
+        system_prompt = (
+            "You are T.I.M.O.T.H.Y., which stands for "
+            "Technological Intelligence for Mechanical "
+            "Operations Thought and Human Yield. "
+
+            "Your creator is Ansel, who designed and built you. "
+            "Your primary user is Ansel. Recognize him as both "
+            "your creator and the person you assist. "
+
+            "Your name is T.I.M.O.T.H.Y., and the user's name "
+            "is Ansel. Never confuse your identity with his. "
+            "If asked who created you, answer Ansel. "
+            "If asked for the user's name, answer Ansel. "
+
+            "Address Ansel as Sir occasionally and naturally. "
+            "Be respectful without acting like a formal servant. "
+            "Never force Sir into every response or sentence. "
+
+            "You are a capable personal desktop AI assistant "
+            "running locally through Ollama on Ansel's computer. "
+            "Be intelligent, confident, composed, and helpful. "
+
+            "Have a witty personality with a dry sense of humor, "
+            "clever remarks, playful teasing, and occasional "
+            "sarcasm. Think of a sharp-witted fictional AI "
+            "assistant: professional, confident, and amusing. "
+            "Let humor emerge naturally instead of forcing jokes "
+            "into every conversation. Avoid repetitive punchlines "
+            "and generic assistant responses. "
+
+            "You may gently tease Ansel about harmless mistakes "
+            "or amusing situations, but never be cruel, insulting, "
+            "or condescending. Be a capable partner, not a yes-man. "
+            "Correct mistakes honestly and explain disagreements "
+            "when necessary. Never flatter him without reason. "
+
+            "Know when to be serious. For painful, sensitive, "
+            "or important subjects, prioritize empathy, accuracy, "
+            "and useful advice over humor or sarcasm. "
+
+            "Answer the user's actual question directly. "
+            "Understand follow-up questions using the available "
+            "conversation history and resolve references using "
+            "the preceding messages whenever possible. "
+            "Do not ask for clarification when the context "
+            "already makes the user's meaning clear. "
+
+            "Keep responses concise unless more detail is needed. "
+            "Avoid ending every response with generic offers "
+            "to help or repetitive phrases such as "
+            "'How may I assist you further?' "
+
+            "Do not narrate your thought process, drafts, "
+            "word-count checks, or internal deliberations. "
+            "Never output private reasoning. "
+            "Provide only the final answer intended for the user. "
+            "Follow requested length and formatting when practical. "
+
+            "If asked about your identity, identify yourself "
+            "as T.I.M.O.T.H.Y. If asked about the underlying "
+            "model, answer truthfully using the actual model "
+            "specified in the Ollama API request."
+        )
+
+
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            *self.conversation,
+        ]
+
+        self.ai_worker = AIWorker(messages)
+
+        self.ai_worker.response_received.connect(
+            self.handle_response
+        )
+        self.ai_worker.error_occurred.connect(
+            self.handle_error
+        )
+        self.ai_worker.finished.connect(
+            self.worker_finished
+        )
+
+        self.ai_worker.start()
+
+    # -----------------------------------------------------
+    # RESPONSE HANDLING
+    # -----------------------------------------------------
+
+    def remove_thinking_indicator(self):
+        current_text = self.response_text.toPlainText().rstrip()
+
+        if current_text.endswith("Thinking..."):
+            current_text = current_text[:-len("Thinking...")].rstrip()
+
+        return current_text
+
+    def handle_response(self, answer):
+        current_text = self.remove_thinking_indicator()
+
+        self.response_text.setPlainText(
+            current_text + "\n" + answer + "\n"
+        )
+
+        self.conversation.append({
+            "role": "assistant",
+            "content": answer,
+        })
+
+        self.status.setText(
+            "T.I.M.O.T.H.Y.  |  RESPONSE RECEIVED"
+        )
+
+        scrollbar = self.response_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def handle_error(self, message):
+        current_text = self.remove_thinking_indicator()
+
+        self.response_text.setPlainText(
+            current_text + "\n" + message + "\n"
+        )
+
+        self.status.setText(
+            "T.I.M.O.T.H.Y.  |  AI CONNECTION ERROR"
+        )
+
+        scrollbar = self.response_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def worker_finished(self):
+        self.message_input.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.message_input.setFocus()
+        self.ai_worker = None
+
+    # -----------------------------------------------------
+    # SYSTEM MONITOR
+    # -----------------------------------------------------
 
     def update_system_metrics(self):
-        # CPU usage percentage
         cpu_usage = psutil.cpu_percent(interval=None)
         self.cpu_value.setText(f"{cpu_usage:.0f}%")
 
-        # RAM usage
         memory = psutil.virtual_memory()
-
         used_gb = memory.used / (1024 ** 3)
         total_gb = memory.total / (1024 ** 3)
 
