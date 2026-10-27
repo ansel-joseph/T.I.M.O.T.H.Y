@@ -6,6 +6,12 @@ import json
 import urllib.request
 import urllib.error
 
+from memory import (
+    initialise_database,
+    save_message,
+    get_recent_messages,
+)
+
 from PySide6.QtCore import Qt, QRectF, QTimer, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -392,7 +398,16 @@ class TimothyWindow(QMainWindow):
         self.resize(1400, 800)
         self.setMinimumSize(1100, 700)
 
-        self.conversation = []
+        initialise_database()
+
+        self.conversation = [
+            {
+                "role": message["role"],
+                "content": message["content"],
+            }
+            for message in get_recent_messages(20)
+        ]
+
         self.ai_worker = None
 
         self.setStyleSheet("""
@@ -621,6 +636,8 @@ class TimothyWindow(QMainWindow):
             "content": message,
         })
 
+        save_message("user", message)
+
         self.response_text.appendPlainText(
             f"\nYOU:\n{message}\n\n"
             "T.I.M.O.T.H.Y.:\nThinking..."
@@ -773,6 +790,8 @@ class TimothyWindow(QMainWindow):
             "role": "assistant",
             "content": answer,
         })
+
+        save_message("assistant", answer)
 
         self.status.setText(
             "T.I.M.O.T.H.Y.  |  RESPONSE RECEIVED"
