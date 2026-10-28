@@ -267,13 +267,12 @@ def _normalise_words(text):
     return words
 
 
+
 def find_relevant_memories(query, limit=5):
     """
-    Find saved facts relevant to a question.
-
-    First match known fact categories using question wording.
-    Then use word overlap to rank facts within those categories.
-    This does not require the question to repeat the original sentence.
+    Retrieve facts by category first.
+    If a category is recognised, do not return unrelated categories.
+    Otherwise, fall back to basic keyword matching.
     """
     query_words = _normalise_words(query)
 
@@ -297,24 +296,23 @@ def find_relevant_memories(query, limit=5):
 
     for row in rows:
         memory = dict(row)
-        fact_words = _normalise_words(
-            memory["category"] + " " + memory["fact"]
-        )
 
-        category_match = (
-            memory["category"] in matching_categories
-        )
+        # A recognised category takes priority.
+        if matching_categories:
+            if memory["category"] not in matching_categories:
+                continue
 
-        word_score = len(query_words.intersection(fact_words))
-
-        # Prefer a recognised category over incidental word overlap.
-        if category_match:
-            score = 100 + word_score
+            score = 100
         else:
-            score = word_score
+            fact_words = _normalise_words(
+                memory["category"] + " " + memory["fact"]
+            )
+            score = len(query_words.intersection(fact_words))
 
-        if score > 0:
-            scored.append((score, memory))
+            if score == 0:
+                continue
+
+        scored.append((score, memory))
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
@@ -322,6 +320,7 @@ def find_relevant_memories(query, limit=5):
         memory
         for _, memory in scored[:max(0, int(limit))]
     ]
+
 
 
 # --------------------------------------------------
