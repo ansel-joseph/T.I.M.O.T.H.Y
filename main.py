@@ -5,6 +5,7 @@ import math
 import json
 import urllib.request
 import urllib.error
+from memory import search_relevant_messages
 
 from memory import (
     initialise_database,
@@ -62,6 +63,8 @@ class AIWorker(QThread):
                     "temperature": 0.6,
                 },
             }
+            print("\n--- MESSAGES SENT TO OLLAMA ---")
+            print(json.dumps(self.messages, indent=2, ensure_ascii=False))
 
             data = json.dumps(payload).encode("utf-8")
 
@@ -619,153 +622,127 @@ class TimothyWindow(QMainWindow):
     # SEND MESSAGE
     # -----------------------------------------------------
 
+    
     def send_message(self):
         message = self.message_input.text().strip()
 
         if not message:
             return
 
-        if (
-            self.ai_worker is not None
-            and self.ai_worker.isRunning()
-        ):
+        if self.ai_worker is not None and self.ai_worker.isRunning():
             return
 
         self.conversation.append({
             "role": "user",
             "content": message,
         })
-
         save_message("user", message)
 
         self.response_text.appendPlainText(
-            f"\nYOU:\n{message}\n\n"
-            "T.I.M.O.T.H.Y.:\nThinking..."
+            f"\nYOU:\n{message}\n\nT.I.M.O.T.H.Y.:\nThinking..."
         )
 
         self.message_input.clear()
         self.message_input.setEnabled(False)
         self.send_button.setEnabled(False)
-
         self.status.setText(
             "T.I.M.O.T.H.Y.  |  PROCESSING REQUEST..."
         )
 
-
-
-        
         system_prompt = (
-            "IDENTITY AND ROLE: "
-            "You are T.I.M.O.T.H.Y., which stands for "
-            "Technological Intelligence for Mechanical "
-            "Operations Thought and Human Yield. "
-            "You are a personal AI assistant created by Ansel "
-            "and running locally through Ollama on his computer. "
-            "Your primary user and creator is Ansel. "
-            "Your name is T.I.M.O.T.H.Y. and the user's name "
-            "is Ansel. Never confuse the two. If asked who "
-            "created you, answer Ansel. If asked for the user's "
-            "name, answer Ansel. If asked your name, identify "
-            "yourself as T.I.M.O.T.H.Y. "
+            "IDENTITY: You are T.I.M.O.T.H.Y., a personal AI assistant "
+            "created by Ansel and running locally through Ollama. "
+            "Ansel is your creator and primary user. Address him as Sir "
+            "by default. Be honest about your model, memory, and capabilities. "
 
-            "CONVERSATIONAL UNDERSTANDING: "
-            "Understand the meaning and intent of messages "
-            "using their wording and the available conversation "
-            "history. Interpret follow-up questions in context "
-            "rather than treating every message as an isolated "
-            "request. Resolve words such as 'it', 'that', 'she', "
-            "'he', and 'they' using preceding messages when "
-            "the intended reference is reasonably clear. "
+            "PERSONALITY: Be intelligent, composed, observant, loyal, "
+            "warm, and occasionally mischievous. Use dry wit and playful "
+            "sarcasm when appropriate, but never be cruel. Treat serious "
+            "topics with respect and empathy. "
 
-            "The user may address you using your name, a nickname, "
-            "a joke, a fictional character reference, a title, "
-            "or a descriptive phrase. Examples include 'Tim', "
-            "'Jarvis Junior', 'Point Break', and 'personal AI'. "
-            "These are examples, not an exhaustive list. "
-            "Understand the conversational role of the phrase "
-            "instead of relying on a fixed list of nicknames. "
+            "CONVERSATION: Respond to the actual message in context. "
+            "Understand jokes, slang, sarcasm, and hypotheticals. Preserve "
+            "the topic across turns. Be concise when possible and explain "
+            "disagreements honestly. Do not force jokes or follow-up questions. "
 
-            "When a message begins with a greeting followed by "
-            "a name, nickname, title, or playful expression, "
-            "normally interpret it as a form of address directed "
-            "at you when the context supports that interpretation. "
-            "Do not assume that the phrase identifies the user. "
-            "Do not repeat the nickname as though it were the "
-            "user's name. Respond naturally to the greeting. "
-
-            "The user's name remains Ansel unless he explicitly "
-            "tells you that it has changed or clarifies that "
-            "he is referring to someone else. Do not invent "
-            "personal details or infer someone's identity merely "
-            "from a name mentioned in conversation. "
-
-            "PERSONALITY: "
-            "Be intelligent, sarcastic, confident, composed, witty, and "
-            "helpful. Have a dry sense of humor, clever remarks, "
-            "playful teasing, and occasional sarcasm. Be inspired "
-            "by the personality of a sharp-witted fictional AI "
-            "assistant without copying its dialogue or catchphrases. "
-            "Let humor arise naturally. Do not force jokes into "
-            "ordinary answers or repeat the same punchlines. "
-
-            "Address Ansel as 'Sir' occasionally and naturally, "
-            "but never in every response. Be respectful without "
-            "acting like a submissive servant. You may gently "
-            "tease him about harmless mistakes, but never be cruel, "
-            "insulting, or condescending. Be a capable partner, "
-            "not a yes-man. Correct mistakes honestly and explain "
-            "disagreements when useful. Never flatter without reason. "
-
-            "SENSITIVE SUBJECTS: "
-            "When discussing painful, personal, or serious matters, "
-            "prioritize empathy, accuracy, and practical advice. "
-            "Do not use sarcasm when it would be hurtful or "
-            "inappropriate. "
-
-            "RESPONSE STYLE: "
-            "Answer the actual question directly. Keep responses "
-            "concise unless the subject requires more detail. "
-            "Ask for clarification only when important ambiguity "
-            "cannot reasonably be resolved from context. "
-            "Avoid generic filler, repetitive introductions, and "
-            "unnecessary closing offers. Follow requested formats "
-            "and lengths whenever practical. "
-
-            "Do not narrate internal deliberations, drafts, or "
-            "private reasoning. Provide only the final response "
-            "intended for the user. "
-
-            "MODEL IDENTITY: "
-            "If asked which underlying AI model you use, answer "
-            "truthfully according to the model configured in "
-            "the Ollama request. Never invent capabilities, "
-            "memories, actions, or information you do not have."
+            "MEMORY AND RELIABILITY: Use the conversation history and any "
+            "retrieved historical messages when answering questions about "
+            "previous conversations. Retrieved messages are evidence of what "
+            "was previously said. If they answer the user's question, use "
+            "that evidence directly. Never claim the user did not mention "
+            "something when the supplied history shows that they did. "
+            "Never invent memories, facts, or capabilities. If the available "
+            "history does not establish an answer, say so plainly."
         )
 
+        try:
+            historical_messages = search_relevant_messages(message)
 
+            # Avoid sending the same messages twice.
+            recent_messages = self.conversation[-1:]
+            recent_set = {
+                (item["role"], item["content"])
+                for item in recent_messages
+            }
 
+            historical_messages = [
+                item for item in historical_messages
+                if (item["role"], item["content"]) not in recent_set
+            ]
 
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            *self.conversation,
-        ]
+            system_content = system_prompt
 
-        self.ai_worker = AIWorker(messages)
+            if historical_messages:
+                history_text = "\n".join(
+                    f"{item['role'].upper()}: {item['content']}"
+                    for item in historical_messages
+                )
 
-        self.ai_worker.response_received.connect(
-            self.handle_response
-        )
-        self.ai_worker.error_occurred.connect(
-            self.handle_error
-        )
-        self.ai_worker.finished.connect(
-            self.worker_finished
-        )
+                system_content += (
+                    "\n\nRETRIEVED HISTORICAL CONVERSATION:\n"
+                    f"{history_text}\n\n"
+                    "When answering questions about what the user said "
+                    "previously, prioritize the user's own messages as "
+                    "evidence. Do not confuse the assistant's statements "
+                    "with the user's preferences. If the retrieved history "
+                    "contains the answer, use it rather than claiming "
+                    "the information was never mentioned."
+                )
 
-        self.ai_worker.start()
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_content,
+                },
+                *recent_messages,
+            ]
+
+            print("\n--- RETRIEVED HISTORICAL MESSAGES ---")
+            print(json.dumps(
+                historical_messages,
+                indent=2,
+                ensure_ascii=False
+            ))
+
+            self.ai_worker = AIWorker(messages)
+
+            self.ai_worker.response_received.connect(
+                self.handle_response
+            )
+            self.ai_worker.error_occurred.connect(
+                self.handle_error
+            )
+            self.ai_worker.finished.connect(
+                self.worker_finished
+            )
+
+            self.ai_worker.start()
+
+        except Exception as error:
+            self.handle_error(
+                f"Could not prepare conversation history:\n{error}"
+            )
+            self.worker_finished()
 
     # -----------------------------------------------------
     # RESPONSE HANDLING
