@@ -1,8 +1,10 @@
-
+import json
+import math
 import re
 import sqlite3
+import urllib.error
+import urllib.request
 from pathlib import Path
-
 
 # --------------------------------------------------
 # DATABASE CONFIGURATION
@@ -12,6 +14,114 @@ DB_PATH = Path(__file__).resolve().parent / "timothy_memory.db"
 
 RECENT_DAYS = 5
 DEFAULT_RECENT_LIMIT = 20
+
+# --------------------------------------------------
+# EMBEDDING CONFIGURATION
+# --------------------------------------------------
+
+OLLAMA_URL = "http://localhost:11434/api/embed"
+EMBEDDING_MODEL = "nomic-embed-text"
+EMBEDDING_TIMEOUT = 60
+
+
+def generate_embeddings(texts):
+    """
+    Convert one or more text strings into numerical embeddings
+    using the local Ollama embedding model.
+
+    Returns a list of vectors, one for each input string.
+    Raises an exception if Ollama cannot generate the embeddings.
+    """
+    if isinstance(texts, str):
+        texts = [texts]
+
+    if not texts:
+        return []
+
+    payload = json.dumps({
+        "model": EMBEDDING_MODEL,
+        "input": texts,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=EMBEDDING_TIMEOUT,
+    ) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    embeddings = result.get("embeddings")
+
+    if not isinstance(embeddings, list):
+        raise ValueError("Ollama returned no embeddings.")
+
+    if len(embeddings) != len(texts):
+        raise ValueError("Ollama returned an unexpected number of embeddings.")
+
+    return embeddings
+
+
+def cosine_similarity(vector_a, vector_b):
+    """Measure the cosine similarity between two embedding vectors."""
+    if len(vector_a) != len(vector_b):
+        return 0.0
+
+    dot_product = sum(
+        a * b for a, b in zip(vector_a, vector_b)
+    )
+
+    magnitude_a = math.sqrt(sum(a * a for a in vector_a))
+    magnitude_b = math.sqrt(sum(b * b for b in vector_b))
+
+    if magnitude_a == 0 or magnitude_b == 0:
+        return 0.0
+
+    return dot_product / (magnitude_a * magnitude_b)
+
+
+def backfill_memory_embeddings(batch_size=32):
+    """Generate embeddings for memories that do not have them."""
+    with get_connection() as connection:
+        rows = connection.execute("""
+            SELECT id, fact
+            FROM memories
+            WHERE embedding IS NULL OR embedding = ''
+            ORDER BY id
+        """).fetchall()
+
+    if not rows:
+        print("All memories already have embeddings.")
+        return 0
+
+    updated = 0
+
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start:start + batch_size]
+        vectors = generate_embeddings(
+            [row["fact"] for row in batch]
+        )
+
+        with get_connection() as connection:
+            connection.executemany("""
+                UPDATE memories
+                SET embedding = ?
+                WHERE id = ?
+            """, [
+                (json.dumps(vector), row["id"])
+                for row, vector in zip(batch, vectors)
+            ])
+
+        updated += len(batch)
+
+    print(f"Generated embeddings for {updated} memories.")
+    return updated
+
 
 
 def get_connection():
@@ -24,6 +134,7 @@ def get_connection():
 # --------------------------------------------------
 # INITIALISE DATABASE
 # --------------------------------------------------
+
 
 def initialise_database():
     """
@@ -40,6 +151,7 @@ def initialise_database():
             )
         """)
 
+        # Create the memories table before checking its columns.
         connection.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,40 +164,32 @@ def initialise_database():
             )
         """)
 
-        # Starter profile: inserted only if a fact does not
-        # already exist. Running this repeatedly won't duplicate it.
+        # Safely add embedding storage to an existing database.
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(memories)"
+            ).fetchall()
+        }
+
+        if "embedding" not in columns:
+            connection.execute("""
+                ALTER TABLE memories
+                ADD COLUMN embedding TEXT
+            """)
+
+        # Starter memories are inserted only if absent.
         starter_memories = [
-            (
-                "faith",
-                "The user identifies as a devout Christian.",
-                "starter_profile",
-            ),
-            (
-                "faith",
-                "The user is Catholic.",
-                "starter_profile",
-            ),
-            (
-                "favorite_superhero",
-                "The user's favourite superhero is Spider-Man.",
-                "starter_profile",
-            ),
-            (
-                "favorite_film",
-                "The user's favourite film is Interstellar.",
-                "starter_profile",
-            ),
+            ("faith", "The user identifies as a devout Christian.", "starter_profile"),
+            ("faith", "The user is Catholic.", "starter_profile"),
+            ("favorite_superhero", "The user's favourite superhero is Spider-Man.", "starter_profile"),
+            ("favorite_film", "The user's favourite film is Interstellar.", "starter_profile"),
             (
                 "robotics",
-                "The user wants to build robotics projects, "
-                "including an Iron Man-style wrist flashlight.",
+                "The user wants to build robotics projects, including an Iron Man-style wrist flashlight.",
                 "starter_profile",
             ),
-            (
-                "education",
-                "The user is studying for a BCA Honours degree.",
-                "starter_profile",
-            ),
+            ("education", "The user is studying for a BCA Honours degree.", "starter_profile"),
         ]
 
         connection.executemany("""
@@ -93,6 +197,7 @@ def initialise_database():
                 (category, fact, source)
             VALUES (?, ?, ?)
         """, starter_memories)
+
 
 
 # --------------------------------------------------
@@ -142,27 +247,34 @@ def get_message_count():
 # --------------------------------------------------
 
 def remember_fact(category, fact, source="explicit_remember"):
-    """
-    Save one fact to permanent memory.
-
-    Returns the saved memory record.
-    Duplicate category/fact pairs are not inserted twice.
-    """
+    """Save a fact and its embedding to permanent memory."""
     category = category.strip().lower()
     fact = fact.strip()
 
     if not category or not fact:
         raise ValueError("Both category and fact are required.")
 
+    # Generate the embedding before writing to the database.
+    embedding = json.dumps(generate_embeddings(fact)[0])
+
     with get_connection() as connection:
         connection.execute("""
             INSERT OR IGNORE INTO memories
-                (category, fact, source)
-            VALUES (?, ?, ?)
-        """, (category, fact, source))
+                (category, fact, source, embedding)
+            VALUES (?, ?, ?, ?)
+        """, (category, fact, source, embedding))
+
+        # Also populate a missing embedding if this fact already exists.
+        connection.execute("""
+            UPDATE memories
+            SET embedding = ?
+            WHERE category = ? AND fact = ?
+              AND embedding IS NULL
+        """, (embedding, category, fact))
 
         row = connection.execute("""
-            SELECT id, category, fact, source, created_at, updated_at
+            SELECT id, category, fact, source,
+                   created_at, updated_at
             FROM memories
             WHERE category = ? AND fact = ?
         """, (category, fact)).fetchone()
@@ -268,58 +380,93 @@ def _normalise_words(text):
 
 
 
+
 def find_relevant_memories(query, limit=5):
     """
-    Retrieve facts by category first.
-    If a category is recognised, do not return unrelated categories.
-    Otherwise, fall back to basic keyword matching.
+    Retrieve memories by semantic similarity across all categories.
+    Fall back to keyword matching if embeddings are unavailable.
     """
+    query = query.strip()
+
+    if not query or limit <= 0:
+        return []
+
+    with get_connection() as connection:
+        rows = connection.execute("""
+            SELECT id, category, fact, source,
+                   created_at, updated_at, embedding
+            FROM memories
+            ORDER BY id DESC
+        """).fetchall()
+
+    if not rows:
+        return []
+
+    # Try semantic retrieval first.
+    try:
+        query_embedding = generate_embeddings(query)[0]
+        scored = []
+
+        for row in rows:
+            memory = dict(row)
+            stored_embedding = memory.get("embedding")
+
+            if not stored_embedding:
+                continue
+
+            try:
+                vector = json.loads(stored_embedding)
+                score = cosine_similarity(query_embedding, vector)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+
+            scored.append((score, memory))
+
+        # Similarity is a ranking signal, not proof of relevance.
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        relevant = [
+            memory
+            for score, memory in scored
+            if score >= 0.35
+        ]
+
+        if relevant:
+            return [
+                {key: value for key, value in memory.items()
+                 if key != "embedding"}
+                for memory in relevant[:int(limit)]
+            ]
+
+    except Exception as error:
+        print(f"Semantic memory search unavailable: {error}")
+
+    # Fallback: basic keyword matching across every category.
     query_words = _normalise_words(query)
 
     if not query_words:
         return []
 
-    matching_categories = {
-        category
-        for category, terms in CATEGORY_TERMS.items()
-        if query_words.intersection(terms)
-    }
-
-    with get_connection() as connection:
-        rows = connection.execute("""
-            SELECT id, category, fact, source, created_at, updated_at
-            FROM memories
-            ORDER BY id DESC
-        """).fetchall()
-
     scored = []
 
     for row in rows:
         memory = dict(row)
+        fact_words = _normalise_words(
+            memory["category"] + " " + memory["fact"]
+        )
+        score = len(query_words.intersection(fact_words))
 
-        # A recognised category takes priority.
-        if matching_categories:
-            if memory["category"] not in matching_categories:
-                continue
-
-            score = 100
-        else:
-            fact_words = _normalise_words(
-                memory["category"] + " " + memory["fact"]
-            )
-            score = len(query_words.intersection(fact_words))
-
-            if score == 0:
-                continue
-
-        scored.append((score, memory))
+        if score > 0:
+            scored.append((score, memory))
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
     return [
-        memory
-        for _, memory in scored[:max(0, int(limit))]
+        {key: value for key, value in memory.items()
+         if key != "embedding"}
+        for _, memory in scored[:int(limit)]
     ]
+
 
 
 
