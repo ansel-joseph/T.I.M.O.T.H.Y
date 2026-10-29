@@ -634,6 +634,68 @@ class TimothyWindow(QMainWindow):
         if self.ai_worker is not None and self.ai_worker.isRunning():
             return
 
+        
+        # Detect an explicit request to remember something.
+        remember_prefixes = (
+            "remember that ",
+            "please remember that ",
+            "remember this: ",
+            "please remember this: ",
+        )
+
+        lower_message = message.lower()
+        memory_fact = None
+
+        for prefix in remember_prefixes:
+            if lower_message.startswith(prefix):
+                memory_fact = message[len(prefix):].strip()
+                break
+
+        if memory_fact:
+            try:
+                remember_fact(
+                    category="general",
+                    fact=memory_fact,
+                    source="explicit_remember",
+                )
+
+                confirmation = (
+                    f"Saved to permanent memory: {memory_fact}"
+                )
+
+                self.conversation.append({
+                    "role": "user",
+                    "content": message,
+                })
+                save_message("user", message)
+
+                self.conversation.append({
+                    "role": "assistant",
+                    "content": confirmation,
+                })
+                save_message("assistant", confirmation)
+
+                self.response_text.appendPlainText(
+                    f"\nYOU:\n{message}\n\n"
+                    f"T.I.M.O.T.H.Y.:\n{confirmation}"
+                )
+
+                self.message_input.clear()
+                self.status.setText(
+                    "T.I.M.O.T.H.Y.  |  MEMORY SAVED"
+                )
+                return
+
+            except Exception as error:
+                self.status.setText(
+                    "T.I.M.O.T.H.Y.  |  MEMORY SAVE FAILED"
+                )
+                self.response_text.appendPlainText(
+                    f"\nT.I.M.O.T.H.Y.:\n"
+                    f"Could not save memory: {error}"
+                )
+                return
+
         self.conversation.append({
             "role": "user",
             "content": message,
