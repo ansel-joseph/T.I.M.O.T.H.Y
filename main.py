@@ -1,16 +1,18 @@
 
 import psutil
 import sys
+import re
 import math
 import json
 import urllib.request
 import urllib.error
-from memory import search_relevant_messages
-
 from memory import (
     initialise_database,
     save_message,
     get_recent_messages,
+    remember_fact,
+    find_relevant_memories,
+    search_relevant_messages,
 )
 
 from PySide6.QtCore import Qt, QRectF, QTimer, QThread, Signal
@@ -675,11 +677,17 @@ class TimothyWindow(QMainWindow):
             "history does not establish an answer, say so plainly."
         )
 
+        
         try:
+            # 1. Retrieve permanent facts from Timothy's memory.
+            permanent_memories = find_relevant_memories(message)
+
+            # 2. Retrieve relevant messages from the old conversation archive.
             historical_messages = search_relevant_messages(message)
 
-            # Avoid sending the same messages twice.
+            # 3. Keep the current user message as the recent context.
             recent_messages = self.conversation[-1:]
+
             recent_set = {
                 (item["role"], item["content"])
                 for item in recent_messages
@@ -692,6 +700,26 @@ class TimothyWindow(QMainWindow):
 
             system_content = system_prompt
 
+            # 4. Add permanent facts to the system prompt.
+            if permanent_memories:
+                memory_text = "\n".join(
+                    f"- [{item['category']}] {item['fact']}"
+                    for item in permanent_memories
+                )
+
+                system_content += (
+                    "\n\nPERMANENT FACT MEMORIES:\n"
+                    f"{memory_text}\n\n"
+                    "These are saved facts about the user. "
+                    "Use them when relevant to the current question. "
+                    "Treat them as evidence of the user's known "
+                    "preferences and information. Do not contradict "
+                    "them using unrelated or incorrect historical "
+                    "assistant messages. Do not invent additional "
+                    "personal facts."
+                )
+
+            # 5. Add relevant archived conversation messages.
             if historical_messages:
                 history_text = "\n".join(
                     f"{item['role'].upper()}: {item['content']}"
@@ -701,14 +729,15 @@ class TimothyWindow(QMainWindow):
                 system_content += (
                     "\n\nRETRIEVED HISTORICAL CONVERSATION:\n"
                     f"{history_text}\n\n"
-                    "When answering questions about what the user said "
-                    "previously, prioritize the user's own messages as "
-                    "evidence. Do not confuse the assistant's statements "
-                    "with the user's preferences. If the retrieved history "
-                    "contains the answer, use it rather than claiming "
-                    "the information was never mentioned."
+                    "Use retrieved messages as evidence of what was "
+                    "previously said. Prioritize the user's own "
+                    "messages when identifying their preferences "
+                    "or statements. Do not confuse assistant claims "
+                    "with user-provided facts. If the supplied "
+                    "evidence does not establish an answer, say so."
                 )
 
+            # 6. Send the assembled context to Ollama.
             messages = [
                 {
                     "role": "system",
@@ -716,6 +745,13 @@ class TimothyWindow(QMainWindow):
                 },
                 *recent_messages,
             ]
+
+            print("\n--- PERMANENT FACT MEMORIES ---")
+            print(json.dumps(
+                permanent_memories,
+                indent=2,
+                ensure_ascii=False
+            ))
 
             print("\n--- RETRIEVED HISTORICAL MESSAGES ---")
             print(json.dumps(
@@ -743,6 +779,7 @@ class TimothyWindow(QMainWindow):
                 f"Could not prepare conversation history:\n{error}"
             )
             self.worker_finished()
+
 
     # -----------------------------------------------------
     # RESPONSE HANDLING
