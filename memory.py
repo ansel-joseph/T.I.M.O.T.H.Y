@@ -501,21 +501,40 @@ def find_relevant_memories(query, limit=5):
                 f"[{memory['category']}] {memory['fact']}"
             )
 
-        relevant = [
-            memory
-            for score, memory in scored
-            if score >= 0.35
-        ]
+ # Diagnostic output for semantic retrieval.
+        print("\n--- SEMANTIC MEMORY SIMILARITY SCORES ---")
+        for score, memory in scored:
+            print(
+                f"{score:.3f} | "
+                f"[{memory['category']}] {memory['fact']}"
+            )
 
-        if relevant:
-            return [
-                {
-                    key: value
-                    for key, value in memory.items()
-                    if key != "embedding"
-                }
-                for memory in relevant[:int(limit)]
+        if scored:
+            best_score = scored[0][0]
+
+            # Keep memories close to the best match.
+            relevance_gap = 0.20
+
+            relevant = [
+                memory
+                for score, memory in scored
+                if score >= 0.35
+                and score >= best_score - relevance_gap
             ]
+
+            if relevant:
+                return [
+                    {
+                        key: value
+                        for key, value in memory.items()
+                        if key != "embedding"
+                    }
+                    for memory in relevant[:int(limit)]
+                ]
+
+    except Exception as error:
+        print(f"Semantic memory search unavailable: {error}")
+
 
     except Exception as error:
         print(f"Semantic memory search unavailable: {error}")
