@@ -449,6 +449,85 @@ def find_relevant_memories(query, limit=5):
 
     scored = []
 
+
+def find_relevant_memories(query, limit=5):
+    """
+    Retrieve memories by semantic similarity across all categories.
+    Fall back to keyword matching if embeddings are unavailable.
+    """
+    query = query.strip()
+
+    if not query or limit <= 0:
+        return []
+
+    with get_connection() as connection:
+        rows = connection.execute("""
+            SELECT id, category, fact, source,
+                   created_at, updated_at, embedding
+            FROM memories
+            ORDER BY id DESC
+        """).fetchall()
+
+    if not rows:
+        return []
+
+    # Try semantic retrieval first.
+    try:
+        query_embedding = generate_embeddings(query)[0]
+        scored = []
+
+        for row in rows:
+            memory = dict(row)
+            stored_embedding = memory.get("embedding")
+
+            if not stored_embedding:
+                continue
+
+            try:
+                vector = json.loads(stored_embedding)
+                score = cosine_similarity(query_embedding, vector)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+
+            scored.append((score, memory))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        # Diagnostic output for semantic retrieval.
+        print("\n--- SEMANTIC MEMORY SIMILARITY SCORES ---")
+        for score, memory in scored:
+            print(
+                f"{score:.3f} | "
+                f"[{memory['category']}] {memory['fact']}"
+            )
+
+        relevant = [
+            memory
+            for score, memory in scored
+            if score >= 0.35
+        ]
+
+        if relevant:
+            return [
+                {
+                    key: value
+                    for key, value in memory.items()
+                    if key != "embedding"
+                }
+                for memory in relevant[:int(limit)]
+            ]
+
+    except Exception as error:
+        print(f"Semantic memory search unavailable: {error}")
+
+    # Keyword fallback across all categories.
+    query_words = _normalise_words(query)
+
+    if not query_words:
+        return []
+
+    scored = []
+
     for row in rows:
         memory = dict(row)
         fact_words = _normalise_words(
@@ -461,11 +540,22 @@ def find_relevant_memories(query, limit=5):
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
+    print("\n--- KEYWORD FALLBACK SCORES ---")
+    for score, memory in scored:
+        print(
+            f"{score} | "
+            f"[{memory['category']}] {memory['fact']}"
+        )
+
     return [
-        {key: value for key, value in memory.items()
-         if key != "embedding"}
+        {
+            key: value
+            for key, value in memory.items()
+            if key != "embedding"
+        }
         for _, memory in scored[:int(limit)]
     ]
+
 
 
 
