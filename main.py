@@ -45,28 +45,104 @@ class AIWorker(QThread):
     response_received = Signal(str)
     error_occurred = Signal(str)
 
-    def __init__(self, messages):
+    def __init__(self, user_message, system_prompt):
         super().__init__()
-        self.messages = messages
+        self.user_message = user_message
+        self.system_prompt = system_prompt
 
     def run(self):
         try:
+            # 1. Retrieve memories in the background thread.
+            permanent_memories = find_relevant_memories(
+                self.user_message
+            )
+
+            historical_messages = search_relevant_messages(
+                self.user_message
+            )
+
+            print("\n--- PERMANENT FACT MEMORIES ---")
+            print(json.dumps(
+                permanent_memories,
+                indent=2,
+                ensure_ascii=False
+            ))
+
+            print("\n--- RETRIEVED HISTORICAL MESSAGES ---")
+            print(json.dumps(
+                historical_messages,
+                indent=2,
+                ensure_ascii=False
+            ))
+
+            # 2. Build the system prompt with retrieved memories.
+            system_content = self.system_prompt
+
+            if permanent_memories:
+                memory_text = "\n".join(
+                    f"- [{item['category']}] {item['fact']}"
+                    for item in permanent_memories
+                )
+
+                system_content += (
+                    "\n\nPERMANENT FACT MEMORIES:\n"
+                    f"{memory_text}\n\n"
+                    "These are saved facts about the user. "
+                    "Use them when relevant to the current question. "
+                    "Treat them as evidence of the user's known "
+                    "preferences and information. Do not contradict "
+                    "them using unrelated or incorrect historical "
+                    "assistant messages. Do not invent additional "
+                    "personal facts."
+                )
+
+            if historical_messages:
+                history_text = "\n".join(
+                    f"{item['role'].upper()}: {item['content']}"
+                    for item in historical_messages
+                )
+
+                system_content += (
+                    "\n\nRETRIEVED HISTORICAL CONVERSATION:\n"
+                    f"{history_text}\n\n"
+                    "Use retrieved messages as evidence of what was "
+                    "previously said. Prioritize the user's own "
+                    "messages when identifying their preferences "
+                    "or statements. Do not confuse assistant claims "
+                    "with user-provided facts. If the supplied "
+                    "evidence does not establish an answer, say so."
+                )
+
+            # 3. Prepare the messages for Ollama.
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_content,
+                },
+                {
+                    "role": "user",
+                    "content": self.user_message,
+                },
+            ]
+
             payload = {
                 "model": "qwen2.5:3b",
                 "keep_alive": "30m",
-                "messages": self.messages,
+                "messages": messages,
                 "stream": False,
-
-                # Disable Qwen3's thinking mode.
                 "think": False,
-
                 "options": {
                     "num_predict": 256,
                     "temperature": 0.6,
                 },
             }
+
             print("\n--- MESSAGES SENT TO OLLAMA ---")
-            print(json.dumps(self.messages, indent=2, ensure_ascii=False))
+            print(json.dumps(
+                messages,
+                indent=2,
+                ensure_ascii=False
+            ))
 
             data = json.dumps(payload).encode("utf-8")
 
@@ -85,25 +161,13 @@ class AIWorker(QThread):
                 )
 
             message_data = response_data.get("message", {})
-
-            # Only display the final content, never the
-            # separate thinking field.
             answer = message_data.get("content", "").strip()
 
             if not answer:
-                thinking = message_data.get("thinking", "").strip()
-
-                if thinking:
-                    answer = (
-                        "I received internal reasoning but no final "
-                        "answer. Check Ollama's Qwen3 thinking-mode "
-                        "support and version."
-                    )
-                else:
-                    answer = (
-                        "Ollama returned an empty response. "
-                        "Please try again."
-                    )
+                answer = (
+                    "Ollama returned an empty response. "
+                    "Please try again."
+                )
 
             self.response_received.emit(answer)
 
@@ -740,107 +804,22 @@ class TimothyWindow(QMainWindow):
         )
 
         
-        try:
-            # 1. Retrieve permanent facts from Timothy's memory.
-            permanent_memories = find_relevant_memories(message)
+        self.ai_worker = AIWorker(
+            user_message=message,
+            system_prompt=system_prompt,
+        )
 
-            # 2. Retrieve relevant messages from the old conversation archive.
-            historical_messages = search_relevant_messages(message)
+        self.ai_worker.response_received.connect(
+            self.handle_response
+        )
+        self.ai_worker.error_occurred.connect(
+            self.handle_error
+        )
+        self.ai_worker.finished.connect(
+            self.worker_finished
+        )
 
-            # 3. Keep the current user message as the recent context.
-            recent_messages = self.conversation[-1:]
-
-            recent_set = {
-                (item["role"], item["content"])
-                for item in recent_messages
-            }
-
-            historical_messages = [
-                item for item in historical_messages
-                if (item["role"], item["content"]) not in recent_set
-            ]
-
-            system_content = system_prompt
-
-            # 4. Add permanent facts to the system prompt.
-            if permanent_memories:
-                memory_text = "\n".join(
-                    f"- [{item['category']}] {item['fact']}"
-                    for item in permanent_memories
-                )
-
-                system_content += (
-                    "\n\nPERMANENT FACT MEMORIES:\n"
-                    f"{memory_text}\n\n"
-                    "These are saved facts about the user. "
-                    "Use them when relevant to the current question. "
-                    "Treat them as evidence of the user's known "
-                    "preferences and information. Do not contradict "
-                    "them using unrelated or incorrect historical "
-                    "assistant messages. Do not invent additional "
-                    "personal facts."
-                )
-
-            # 5. Add relevant archived conversation messages.
-            if historical_messages:
-                history_text = "\n".join(
-                    f"{item['role'].upper()}: {item['content']}"
-                    for item in historical_messages
-                )
-
-                system_content += (
-                    "\n\nRETRIEVED HISTORICAL CONVERSATION:\n"
-                    f"{history_text}\n\n"
-                    "Use retrieved messages as evidence of what was "
-                    "previously said. Prioritize the user's own "
-                    "messages when identifying their preferences "
-                    "or statements. Do not confuse assistant claims "
-                    "with user-provided facts. If the supplied "
-                    "evidence does not establish an answer, say so."
-                )
-
-            # 6. Send the assembled context to Ollama.
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_content,
-                },
-                *recent_messages,
-            ]
-
-            print("\n--- PERMANENT FACT MEMORIES ---")
-            print(json.dumps(
-                permanent_memories,
-                indent=2,
-                ensure_ascii=False
-            ))
-
-            print("\n--- RETRIEVED HISTORICAL MESSAGES ---")
-            print(json.dumps(
-                historical_messages,
-                indent=2,
-                ensure_ascii=False
-            ))
-
-            self.ai_worker = AIWorker(messages)
-
-            self.ai_worker.response_received.connect(
-                self.handle_response
-            )
-            self.ai_worker.error_occurred.connect(
-                self.handle_error
-            )
-            self.ai_worker.finished.connect(
-                self.worker_finished
-            )
-
-            self.ai_worker.start()
-
-        except Exception as error:
-            self.handle_error(
-                f"Could not prepare conversation history:\n{error}"
-            )
-            self.worker_finished()
+        self.ai_worker.start()
 
 
     # -----------------------------------------------------
