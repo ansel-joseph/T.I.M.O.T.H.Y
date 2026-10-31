@@ -586,10 +586,12 @@ def find_relevant_memories(query, limit=5):
 
 
 
+
 def search_relevant_messages(query, limit=10):
     """
-    Search archived conversations using weighted keyword relevance.
-    Prioritises user messages and reduces duplicate results.
+    Search archived conversations using weighted relevance.
+    Prioritises explicit user facts, reduces duplicate results,
+    and gives questions lower priority than factual statements.
     """
 
     if not query or limit <= 0:
@@ -623,6 +625,27 @@ def search_relevant_messages(query, limit=10):
             if word not in stop_words and len(word) > 2
         ]
 
+    def is_question(text):
+        text = text.strip().lower()
+
+        question_starters = (
+            "what ", "who ", "when ", "where ", "why ", "how ",
+            "which ", "is ", "are ", "was ", "were ", "do ",
+            "does ", "did ", "can ", "could ", "would ",
+            "will ", "have ", "has "
+        )
+
+        return (
+            text.endswith("?")
+            or text.startswith(question_starters)
+        )
+
+    def is_explicit_memory(text):
+        return bool(re.search(
+            r"\b(remember|don't forget|save this|note this)\b",
+            text.lower()
+        ))
+
     query_words = normalise_text(query)
 
     if not query_words:
@@ -640,7 +663,7 @@ def search_relevant_messages(query, limit=10):
         """).fetchall()
 
     scored = []
-    seen_contents = set()
+    seen_messages = []
 
     for position, row in enumerate(rows):
         content = row["content"]
@@ -649,33 +672,56 @@ def search_relevant_messages(query, limit=10):
         if not normalised_content:
             continue
 
-        # Avoid returning identical messages repeatedly.
-        if normalised_content in seen_contents:
-            continue
-
         content_words = set(normalised_content.split())
         matched_words = query_keywords.intersection(content_words)
 
         if not matched_words:
             continue
 
-        seen_contents.add(normalised_content)
+        # Remove near-duplicate messages from the same role.
+        duplicate = False
+
+        for previous_role, previous_words in seen_messages:
+            if previous_role != row["role"]:
+                continue
+
+            union = content_words.union(previous_words)
+
+            similarity = (
+                len(content_words.intersection(previous_words))
+                / len(union)
+                if union else 0
+            )
+
+            if similarity >= 0.80:
+                duplicate = True
+                break
+
+        if duplicate:
+            continue
+
+        seen_messages.append((row["role"], content_words))
 
         coverage = len(matched_words) / len(query_keywords)
 
-        score = (
-            len(matched_words) * 2
-            + coverage * 5
-        )
+        score = len(matched_words) * 2 + coverage * 5
 
         if query_phrase in normalised_content:
             score += 5
 
-        # Prefer original user statements.
+        # Prioritise original user information.
         if row["role"] == "user":
             score += 3
 
-        # Small recency preference.
+            if is_question(content):
+                score -= 4
+            else:
+                score += 2
+
+            if is_explicit_memory(content):
+                score += 7
+
+        # Slight preference for newer messages.
         score += 0.5 / (position + 1)
 
         scored.append((score, dict(row)))
