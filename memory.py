@@ -585,11 +585,11 @@ def find_relevant_memories(query, limit=5):
 # --------------------------------------------------
 
 
+
 def search_relevant_messages(query, limit=10):
     """
     Search archived conversations using weighted keyword relevance.
-    Prioritises keyword coverage and phrase matches, with recency
-    used as a small tie-breaker.
+    Prioritises user messages and reduces duplicate results.
     """
 
     if not query or limit <= 0:
@@ -613,8 +613,6 @@ def search_relevant_messages(query, limit=10):
 
     def normalise_text(text):
         text = text.lower()
-
-        # Treat Spider-Man and Spiderman as the same word.
         text = re.sub(r"spider[\s-]*man", "spiderman", text)
 
         words = re.findall(r"[a-z0-9]+", text)
@@ -631,8 +629,6 @@ def search_relevant_messages(query, limit=10):
         return []
 
     query_keywords = set(query_words)
-
-    # Preserve the meaningful phrase order.
     query_phrase = " ".join(query_words)
 
     with get_connection() as connection:
@@ -644,21 +640,27 @@ def search_relevant_messages(query, limit=10):
         """).fetchall()
 
     scored = []
+    seen_contents = set()
 
     for position, row in enumerate(rows):
         content = row["content"]
+        normalised_content = " ".join(normalise_text(content))
 
-        content_words = normalise_text(content)
-        content_word_set = set(content_words)
+        if not normalised_content:
+            continue
 
-        matched_words = query_keywords.intersection(
-            content_word_set
-        )
+        # Avoid returning identical messages repeatedly.
+        if normalised_content in seen_contents:
+            continue
+
+        content_words = set(normalised_content.split())
+        matched_words = query_keywords.intersection(content_words)
 
         if not matched_words:
             continue
 
-        # Reward matching more of the important query words.
+        seen_contents.add(normalised_content)
+
         coverage = len(matched_words) / len(query_keywords)
 
         score = (
@@ -666,15 +668,15 @@ def search_relevant_messages(query, limit=10):
             + coverage * 5
         )
 
-        # Reward matching the meaningful words in sequence.
-        content_phrase = " ".join(content_words)
-
-        if query_phrase in content_phrase:
+        if query_phrase in normalised_content:
             score += 5
 
-        # Slight preference for newer conversations.
-        recency_bonus = 0.5 / (position + 1)
-        score += recency_bonus
+        # Prefer original user statements.
+        if row["role"] == "user":
+            score += 3
+
+        # Small recency preference.
+        score += 0.5 / (position + 1)
 
         scored.append((score, dict(row)))
 
@@ -687,6 +689,7 @@ def search_relevant_messages(query, limit=10):
         }
         for _, row in scored[:int(limit)]
     ]
+
 
 
 
