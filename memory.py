@@ -584,13 +584,17 @@ def find_relevant_memories(query, limit=5):
 # Keep this function until main.py is updated.
 # --------------------------------------------------
 
+
 def search_relevant_messages(query, limit=10):
     """
-    Basic keyword search over the conversation archive.
-
-    This is retained for compatibility with the existing main.py.
-    The new permanent fact memory uses find_relevant_memories().
+    Search archived conversations using weighted keyword relevance.
+    Prioritises keyword coverage and phrase matches, with recency
+    used as a small tie-breaker.
     """
+
+    if not query or limit <= 0:
+        return []
+
     stop_words = {
         "i", "me", "my", "you", "your", "the", "a", "an",
         "is", "was", "were", "am", "are", "do", "did",
@@ -605,18 +609,31 @@ def search_relevant_messages(query, limit=10):
         "superheroes": "hero",
         "favorite": "favourite",
         "favourites": "favourite",
-        "spiderman": "spider-man",
     }
 
-    words = re.findall(r"[a-z0-9]+", query.lower())
-    keywords = {
-        synonyms.get(word, word)
-        for word in words
-        if word not in stop_words and len(word) > 2
-    }
+    def normalise_text(text):
+        text = text.lower()
 
-    if not keywords:
+        # Treat Spider-Man and Spiderman as the same word.
+        text = re.sub(r"spider[\s-]*man", "spiderman", text)
+
+        words = re.findall(r"[a-z0-9]+", text)
+
+        return [
+            synonyms.get(word, word)
+            for word in words
+            if word not in stop_words and len(word) > 2
+        ]
+
+    query_words = normalise_text(query)
+
+    if not query_words:
         return []
+
+    query_keywords = set(query_words)
+
+    # Preserve the meaningful phrase order.
+    query_phrase = " ".join(query_words)
 
     with get_connection() as connection:
         rows = connection.execute("""
@@ -628,22 +645,38 @@ def search_relevant_messages(query, limit=10):
 
     scored = []
 
-    for row in rows:
-        content = row["content"].lower()
+    for position, row in enumerate(rows):
+        content = row["content"]
 
-        if content.strip() == query.strip().lower():
-            continue
+        content_words = normalise_text(content)
+        content_word_set = set(content_words)
 
-        content_words = set(re.findall(r"[a-z0-9]+", content))
-
-        score = sum(
-            1 for keyword in keywords
-            if keyword in content_words
-            or keyword.replace("-", "") in content_words
+        matched_words = query_keywords.intersection(
+            content_word_set
         )
 
-        if score:
-            scored.append((score, dict(row)))
+        if not matched_words:
+            continue
+
+        # Reward matching more of the important query words.
+        coverage = len(matched_words) / len(query_keywords)
+
+        score = (
+            len(matched_words) * 2
+            + coverage * 5
+        )
+
+        # Reward matching the meaningful words in sequence.
+        content_phrase = " ".join(content_words)
+
+        if query_phrase in content_phrase:
+            score += 5
+
+        # Slight preference for newer conversations.
+        recency_bonus = 0.5 / (position + 1)
+        score += recency_bonus
+
+        scored.append((score, dict(row)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
@@ -652,8 +685,9 @@ def search_relevant_messages(query, limit=10):
             "role": row["role"],
             "content": row["content"],
         }
-        for _, row in scored[:max(0, int(limit))]
+        for _, row in scored[:int(limit)]
     ]
+
 
 
 # --------------------------------------------------
